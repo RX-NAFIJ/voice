@@ -77,15 +77,17 @@ export default function App() {
   // Voice cloning modal state
   const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
 
-  // Generation history
+  // Generation history (safe initialization)
   const [history, setHistory] = useState<HistoryItem[]>(() => {
-    const saved = localStorage.getItem('rx_voice_history');
-    if (saved) {
-      try {
+    try {
+      const saved = localStorage.getItem('rx_voice_history');
+      if (saved) {
         return JSON.parse(saved);
-      } catch {
-        return [];
       }
+    } catch {
+      try {
+        localStorage.removeItem('rx_voice_history');
+      } catch {}
     }
     return [];
   });
@@ -108,15 +110,21 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.remove('light', 'dark');
     document.documentElement.classList.add(theme);
-    localStorage.setItem('rx_voice_theme', theme);
+    try {
+      localStorage.setItem('rx_voice_theme', theme);
+    } catch {}
   }, [theme]);
 
-  // Persist cloned voices
+  // Persist cloned voices safely
   const saveClonedVoice = (newVoice: VoiceOption) => {
     const updated = [...voices, newVoice];
     setVoices(updated);
     const clonedOnly = updated.filter((v) => v.category === 'cloned');
-    localStorage.setItem('rx_voice_clones', JSON.stringify(clonedOnly));
+    try {
+      localStorage.setItem('rx_voice_clones', JSON.stringify(clonedOnly));
+    } catch (err) {
+      console.warn('Failed to save cloned voice to storage:', err);
+    }
     setSelectedVoiceId(newVoice.id);
   };
 
@@ -124,28 +132,60 @@ export default function App() {
     const updated = voices.filter((v) => v.id !== id);
     setVoices(updated);
     const clonedOnly = updated.filter((v) => v.category === 'cloned');
-    localStorage.setItem('rx_voice_clones', JSON.stringify(clonedOnly));
+    try {
+      localStorage.setItem('rx_voice_clones', JSON.stringify(clonedOnly));
+    } catch {}
     if (selectedVoiceId === id) {
       setSelectedVoiceId('male');
     }
   };
 
-  // Persist history
+  // Persist history safely without overflowing 5MB localStorage quota
   const addHistoryItem = (item: HistoryItem) => {
-    const updated = [item, ...history.slice(0, 19)]; // keep latest 20
-    setHistory(updated);
-    localStorage.setItem('rx_voice_history', JSON.stringify(updated));
+    try {
+      // In memory state, keep full audio items
+      const updated = [item, ...history.slice(0, 19)];
+      setHistory(updated);
+
+      // In localStorage, store only the latest 2 with audio to keep size < 500KB
+      const storageSafe = updated.slice(0, 10).map((h, idx) => ({
+        ...h,
+        audioBase64: idx < 2 ? h.audioBase64 : '',
+      }));
+
+      try {
+        localStorage.setItem('rx_voice_history', JSON.stringify(storageSafe));
+      } catch {
+        // If still exceeds quota, store metadata only (takes < 2 KB)
+        const metaOnly = updated.slice(0, 15).map((h) => ({
+          ...h,
+          audioBase64: '',
+        }));
+        try {
+          localStorage.setItem('rx_voice_history', JSON.stringify(metaOnly));
+        } catch {
+          // If total storage is full, clean old history
+          localStorage.removeItem('rx_voice_history');
+        }
+      }
+    } catch (e) {
+      console.warn('addHistoryItem ignored:', e);
+    }
   };
 
   const deleteHistoryItem = (id: string) => {
     const updated = history.filter((h) => h.id !== id);
     setHistory(updated);
-    localStorage.setItem('rx_voice_history', JSON.stringify(updated));
+    try {
+      localStorage.setItem('rx_voice_history', JSON.stringify(updated.slice(0, 10)));
+    } catch {}
   };
 
   const clearAllHistory = () => {
     setHistory([]);
-    localStorage.removeItem('rx_voice_history');
+    try {
+      localStorage.removeItem('rx_voice_history');
+    } catch {}
   };
 
   // Find currently selected voice
@@ -204,17 +244,21 @@ export default function App() {
       setAudioBase64(rawB64);
       setSpokenText(data.spokenText || inputText);
 
-      // Add to history
-      addHistoryItem({
-        id: `gen_${Date.now()}`,
-        text: data.spokenText || inputText,
-        voiceName: activeVoice.name,
-        emotion: selectedEmotion,
-        speed,
-        pitch,
-        audioBase64: rawB64,
-        createdAt: new Date().toISOString(),
-      });
+      // Add to history safely without breaking audio playback
+      try {
+        addHistoryItem({
+          id: `gen_${Date.now()}`,
+          text: data.spokenText || inputText,
+          voiceName: activeVoice.name,
+          emotion: selectedEmotion,
+          speed,
+          pitch,
+          audioBase64: rawB64,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (histErr) {
+        console.warn('History addition skipped:', histErr);
+      }
     } catch (err: any) {
       console.warn('Backend TTS failed, trying fallback synthesis:', err);
       // Fallback to browser SpeechSynthesis
@@ -253,6 +297,17 @@ export default function App() {
   };
 
   const handlePlayFromHistory = async (item: HistoryItem) => {
+    if (!item.audioBase64) {
+      setInputText(item.text);
+      setSpeed(item.speed);
+      setPitch(item.pitch);
+      const matched = voices.find((v) => v.name.includes(item.voiceName) || v.id === item.voiceName);
+      if (matched) setSelectedVoiceId(matched.id);
+      setActiveTab('tts');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
     try {
       const arrayBuf = base64ToArrayBuffer(item.audioBase64);
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();

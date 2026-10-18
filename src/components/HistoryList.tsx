@@ -27,6 +27,10 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   onClearAll,
 }) => {
   const handleDownload = async (item: HistoryItem) => {
+    if (!item.audioBase64) {
+      onPlayItem(item);
+      return;
+    }
     try {
       const arrayBuffer = base64ToArrayBuffer(item.audioBase64);
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
