@@ -1,0 +1,8 @@
+{
+  "name": "RX NAFIJ AI VOICE",
+  "description": "ElevenLabs-style Bengali AI Voice Generator and Voice Cloning studio with human-like Bengali voices, emotion and speed control, and MP3 download.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
